@@ -1,0 +1,276 @@
+<form version="1.1">
+  <label>CAP - SmartStore storage size calculation</label>
+  <fieldset submitButton="false">
+    <input type="text" token="idx_token">
+      <label>Index</label>
+      <default>main</default>
+    </input>
+    <input type="dropdown" token="cache_days_token" searchWhenChanged="false">
+      <label>Cache Days</label>
+      <choice value="90">Splunk ES</choice>
+      <choice value="30">default</choice>
+      <default>30</default>
+      <initialValue>30</initialValue>
+    </input>
+    <input type="text" token="safety_token">
+      <label>Safety margin (%)</label>
+      <default>0</default>
+      <initialValue>0</initialValue>
+    </input>
+    <input type="text" token="repFactor_token">
+      <label>Replication Factor</label>
+      <default>1</default>
+      <initialValue>1</initialValue>
+    </input>
+    <input type="dropdown" token="calcmodel_token">
+      <label>Calculation model</label>
+      <choice value="splunk_doc">Splunk doc</choice>
+      <choice value="splunk_ods">ODS engineer</choice>
+      <choice value="nuantix">Nuantix</choice>
+      <default>splunk_doc</default>
+      <initialValue>splunk_doc</initialValue>
+    </input>
+    <input type="checkbox" token="show_base_searches">
+      <label></label>
+      <choice value="show_base_searches">Show discovery searches</choice>
+      <delimiter> </delimiter>
+    </input>
+  </fieldset>
+  <row depends="$show_base_searches$">
+    <panel>
+      <html>
+<h1>Introduction</h1>
+This dashboard contains a series of searches that attempt to reverse engineer and size your Splunk infrastructure to calculate the necessary cache and total sizes of SmartStore. The measurement is based on 3 different calculation models, <a href="https://docs.splunk.com/Documentation/Splunk/latest/Capacity/Estimateyourstoragerequirements">Splunk docs</a>, ODS engineer and <a href="https://portal.nutanix.com/page/documents/solutions/details?targetId=RA-2019-Virtualizing-Splunk-on-Nutanix:splunk-smartstore-sizing.html">Nuantix</a>.
+
+<h2>Calculation Models</h2>
+<ul>
+  <li>Splunk doc = (Daily ingest GB * Cache Days * Compression)</li>
+  <li>ODS engineer = ((Daily ingest GB * Compression ) * (Hot days + Cache Days) * Safety Margin)</li>
+  <li>Nuantix = (Daily Ingest GB * RepFactor) + ((Cache Days - 1) * Daily Ingest GB)</li>
+</ul>
+
+<h3>Explanation</h3>
+<ul>
+  <li>Daily Ingest GB = based on the ingestion counted from source=*license_usage.log per index</li>
+  <li>Hot Days = hot buckets still get written to homePath and stay there until they roll to warm (and get synced to SmartStore)</li>
+  <li>Cache Days = Splunk <a href="https://docs.splunk.com/Documentation/Splunk/latest/Capacity/Estimateyourstoragerequirements">differentiate</a> between 30 and 90 days of cache</li>
+  <li>Compression = sizeOnDiskGBTotal and rawTotalGB from dbinspect, is required to get the net storage requirement, Splunk is counting with 50%.</li>
+  <li>Safety Margin = to cover your back and only gets used in the calculation "ODS engineer"</li>
+</ul>
+
+<h2>Install the dashboard</h2>
+<ul>
+  <li>Install the dashboard with copy and paste on a suitable SH, ideally the DMC (not a CM, a SH connecting to many clusters)</li>
+  <li>Check that your user has access to the _internal indexes and can use REST and DBINSPECT</li>
+  <li>Optionally check the “show discovery searches” to understand how extraction is working</li>
+  <li>Aslo make sure you have the following macro with relevant information available: licensemasterhost</li>
+</ul>
+
+<h2>Requirements</h2>
+The design principal behind the dashboard is to use basic search on the _internal index only, but also REST and DBINSPECT. For this reason, the dashboard should be installed on DMC or a equivalent that connects to every indexer in every cluster. Installing it on a cluster master is this is unlikely to work as the cluster master may not search all indexers. Your user must have access to the internal indexes and REST and DBINSPECT.
+
+<h3>Disclaimer</h3>
+All information is provided at your own risk. All data collected is classfied service data as described in <a href="https://www.splunk.com/en_us/legal/privacy/privacy-policy.html">SPLUNK PRIVACY POLICY</a>. Please review the CSV file to determine whether any information is sensitive. This has not been tested on all versions of Splunk and one or more base searches may fail. 
+
+<h5>/mail@strahlenkun.de/v0.3</h5>
+  </html>
+    </panel>
+  </row>
+  <row depends="$show_base_searches$">
+    <panel>
+      <title>Daily Ingest (DISCOVERY)</title>
+      <table>
+        <search id="daily_ingest">
+          <progress>
+            <unset token="daily_ingest"></unset>
+          </progress>
+          <done>
+            <set token="daily_ingest">$job.sid$</set>
+          </done>
+          <query>index=_internal sourcetype=splunkd source=*license_usage.log type=Usage earliest=-1d@d latest=-0d@d pool=* idx=$idx_token$* st=* `licensemasterhost`
+| bin _time span=1d 
+| eval size=round(sum(b)/1024/1024,2) 
+| stats sum(size) as dailyIngestMB by idx 
+| eval dailyIngestGB=round(dailyIngestMB/1024,0) 
+| sort idx</query>
+          <earliest>-7d@d</earliest>
+          <latest>now</latest>
+          <sampleRatio>1</sampleRatio>
+        </search>
+        <option name="count">100</option>
+        <option name="dataOverlayMode">none</option>
+        <option name="drilldown">none</option>
+        <option name="percentagesRow">false</option>
+        <option name="rowNumbers">false</option>
+        <option name="totalsRow">false</option>
+        <option name="wrap">true</option>
+        <format type="number" field="size"></format>
+        <format type="number" field="Daily Ingest (MB)"></format>
+        <format type="number" field="dailyIngestMB">
+          <option name="precision">0</option>
+        </format>
+      </table>
+    </panel>
+    <panel>
+      <title>Compression (DISCOVERY)</title>
+      <table>
+        <search id="compression">
+          <progress>
+            <unset token="compression"></unset>
+          </progress>
+          <done>
+            <set token="compression">$job.sid$</set>
+          </done>
+          <query>| dbinspect index=$idx_token$*
+| fields rawSize, sizeOnDiskMB, splunk_server, index, state, path, *Epoch 
+| rex field=path "(?&lt;path&gt;(data-cold|data))" 
+| eval rawSizeB=round(rawSize,0), sizeOnDiskMB=round(sizeOnDiskMB,0) 
+| stats sum(eval(round(rawSizeB/1024/1024/1024,2))) as rawTotalGB, sum(eval(round(sizeOnDiskMB/1024,2))) as sizeOnDiskGBTotal, dc(splunk_server) as distribution, first(startEpoch) as firstEpoch, last(endEpoch) as lastEpoch by index 
+| stats values(rawTotalGB) as rawTotalGB, values(sizeOnDiskGBTotal) as sizeOnDiskGBTotal, values(distribution) as peer_nodes, values(firstEpoch) as firstEpoch, values(lastEpoch) as lastEpoch by index 
+| eval compression=round(100-(sizeOnDiskGBTotal/rawTotalGB)*100,2), age_in_days=round((lastEpoch-firstEpoch)/86400,0) 
+| stats avg(compression) as compression max(age_in_days) as age_in_days max(peer_nodes) as peer_nodes by index
+| rename index AS idx 
+| fillnull 
+| sort idx</query>
+          <earliest>0</earliest>
+          <latest></latest>
+          <sampleRatio>1</sampleRatio>
+        </search>
+        <option name="count">100</option>
+        <option name="dataOverlayMode">none</option>
+        <option name="drilldown">none</option>
+        <option name="percentagesRow">false</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="rowNumbers">false</option>
+        <option name="totalsRow">false</option>
+        <option name="wrap">true</option>
+      </table>
+    </panel>
+    <panel>
+      <title>Retention (DISCOVERY)</title>
+      <table>
+        <search id="retentionDays">
+          <progress>
+            <unset token="retentionDays"></unset>
+          </progress>
+          <done>
+            <set token="retentionDays">$job.sid$</set>
+          </done>
+          <query>| rest /services/data/indexes datatype=all 
+| fields title frozenTimePeriodInSecs 
+| search title=$idx_token$* 
+| stats latest(frozenTimePeriodInSecs) as frozenTimePeriodInSecs by title 
+| rename title AS idx 
+| eval retentionDays=frozenTimePeriodInSecs/60/60/24 
+| sort idx</query>
+          <earliest>-24h@h</earliest>
+          <latest>now</latest>
+          <sampleRatio>1</sampleRatio>
+        </search>
+        <option name="count">100</option>
+        <option name="dataOverlayMode">none</option>
+        <option name="drilldown">none</option>
+        <option name="percentagesRow">false</option>
+        <option name="refresh.display">progressbar</option>
+        <option name="rowNumbers">false</option>
+        <option name="totalsRow">false</option>
+        <option name="wrap">true</option>
+      </table>
+    </panel>
+  </row>
+  <row depends="$show_base_searches$">
+    <panel>
+      <title>The base report - please export this report for further processing (DISCOVERY)</title>
+      <table>
+        <search id="calculation">
+          <query>| union 
+    [| loadjob $daily_ingest$ ] 
+    [| loadjob $compression$ ] 
+    [| loadjob $retentionDays$ ] 
+| stats values(*) as * by idx 
+| fillnull</query>
+          <earliest>-12h@h</earliest>
+          <latest>now</latest>
+        </search>
+        <option name="refresh.display">progressbar</option>
+        <format type="number" field="dailyIngestMB"></format>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Calculation of CACHE sizes based on $calcmodel_token$ for index=$idx_token$, for $cache_days_token$ cache days  and $safety_token$% safety margin</title>
+      <table>
+        <search base="calculation">
+          <query>| eval cacheMB=case(
+    "$calcmodel_token$" == "splunk_ods", round((dailyIngestMB * (compression/100)) * (1+$cache_days_token$) * (1 + ($safety_token$/100)),0), 
+    "$calcmodel_token$" == "nuantix", round((dailyIngestMB*$repFactor_token$) + (($cache_days_token$-1) * dailyIngestMB),0), 
+    1==1, round(dailyIngestMB * $cache_days_token$ * (compression/100),0)
+    ), 
+    cacheGB=round(cacheMB/1024,0), cachGBperpeer=round(cacheGB/peer_nodes,0)
+| stats values(cacheMB) as cacheMB values(cacheGB) as cacheGB values(cachGBperpeer) as cachGBperpeer by idx 
+| rename cacheMB AS "CACHE SmartStore (MB)", cacheGB AS "CACHE SmartStore (GB)", cachGBperpeer as "CACHE SmartStore (GB) per peer-node"
+| fillnull 
+| addcoltotals labelfield=idx label="= CACHE SmartStore"</query>
+        </search>
+        <option name="refresh.display">preview</option>
+        <format type="number" field="sscache"></format>
+        <format type="number" field="SmartStore Cache (MB)">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="SmartStore Cache (GB)">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="cachGBperpeer">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="SmartStore Cache (GB) per peer-node">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="CACHE SmartStore (MB)">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="CACHE SmartStore (GB)">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="CACHE SmartStore (GB) per peer-node">
+          <option name="precision">0</option>
+        </format>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Calculation of TOTAL SmartStore needed based on $calcmodel_token$ for index=$idx_token$</title>
+      <table>
+        <search base="calculation">
+          <query>| eval cacheMBttl=round((dailyIngestMB*retentionDays) * (compression/100),0), cacheGBttl=round(cacheMBttl/1024,0)
+| stats values(cacheMBttl) as cacheMBttl values(cacheGBttl) as cacheGBttl by idx 
+| rename cacheMBttl AS "TOTAL SmartStore (MB)", cacheGBttl AS "TOTAL SmartStore (GB)"
+| fillnull 
+| addcoltotals labelfield=idx label="= TOTAL SmartStore"</query>
+        </search>
+        <option name="refresh.display">preview</option>
+        <format type="number" field="sscache"></format>
+        <format type="number" field="SmartStore Cache (MB)">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="SmartStore Cache (GB)">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="cachGBperpeer">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="SmartStore Cache (GB) per peer-node">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="TOTAL SmartStore (MB)">
+          <option name="precision">0</option>
+        </format>
+        <format type="number" field="TOTAL SmartStore (GB)">
+          <option name="precision">0</option>
+        </format>
+      </table>
+    </panel>
+  </row>
+</form>
